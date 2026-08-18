@@ -200,6 +200,8 @@ Web 端的对应关系（byId → 无障碍树 → 截图坐标）见 `reference
 
 先试 L1，拿不到目标就 L2，再拿不到才 L3。一条 20 步的用例通常只有 1–3 步会掉到 L3。
 全程都在 L3 说明这个 App 的可访问性有问题，那本身就是该报的缺陷。
+**iOS 上换层前必须确认旧驱动已退出**——Maestro/idb/mobile-mcp 并发连同一台模拟器
+会触发 XCTAutomationSession 竞态、打崩 SpringBoard（硬规则见 vision-fallback「iOS 后端互斥」）。
 
 L3 的完整规程见 `references/vision-fallback.md`，三条不能省的纪律：
 坐标换算只走 `screen.py tap --space image --ref`（不在 prompt 里自己做乘除法）；

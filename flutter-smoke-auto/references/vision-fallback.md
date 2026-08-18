@@ -123,6 +123,18 @@ brew tap facebook/fb && brew install idb-companion && pipx install fb-idb
 不想装 idb 的话，用 `mobile-mcp` 或 Maestro 当输入后端——它们内部已经解决了
 这个问题。真机则需要 WebDriverAgent，配置成本更高，冒烟阶段建议只用模拟器。
 
+**iOS 后端互斥（硬规则）：同一台模拟器同一时刻只允许一个自动化客户端。**
+Maestro、idb、mobile-mcp/WebDriverAgent 都会向模拟器建立 XCTest 自动化会话，
+而 `XCTAutomationSession` 的初始化存在并发竞态（Apple bug）——两个会话同时建立
+会把模拟器内的 SpringBoard 直接打崩（EXC_BAD_ACCESS，模拟器自动重启、用例莫名中断）。
+所以：
+
+- 一轮之内选定一个输入后端就用到底，不要 idb 和 Maestro 混着点；
+- 换后端（或修复轮里用 idb 探查页面）之前，先确认上一个驱动已退出：
+  `pgrep -f "maestro-driver-ios|idb_companion" || echo clean`，有残留先 kill；
+- `run_smoke.sh` 起 maestro 前会自动清残留驱动、全量跑完自动 shutdown 模拟器——
+  绕过它手动跑 maestro 时，这两步要自己做。
+
 ## 什么时候该停下来改 App 而不是继续烧 token
 
 如果某个元素反复要靠 L3 才点得到，正确的反应不是加大 token 预算，而是

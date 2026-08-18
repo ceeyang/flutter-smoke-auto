@@ -33,6 +33,7 @@ WEB_PORT=8788
 ATTACH=0
 ONLY_KW=""
 CHANGED=0
+SHUTDOWN=""   # iOS：跑完是否 simctl shutdown。空=自动（全量关、定向不关），--shutdown/--no-shutdown 显式覆盖
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -47,6 +48,8 @@ while [[ $# -gt 0 ]]; do
     --dart-define) DART_DEFINES="$DART_DEFINES --dart-define=$2"; shift 2 ;;
     --env)         MAESTRO_ENV+=("-e" "$2"); shift 2 ;;
     --web-port)    WEB_PORT="$2"; shift 2 ;;
+    --shutdown)    SHUTDOWN=1; shift ;;
+    --no-shutdown) SHUTDOWN=0; shift ;;
     *) echo "未知参数: $1"; exit 2 ;;
   esac
 done
@@ -205,6 +208,24 @@ print(devs[0]['udid'] if devs else '')")
   echo "iOS 模拟器: $UDID"
 fi
 
+# ── iOS 单驱动闸门 ──
+# SpringBoard 的 XCTAutomationSession init 有并发竞态（Apple bug，见 PITFALLS
+# 2026-08-18）：残留的自动化会话叠上新会话，模拟器内 SpringBoard 直接段错误。
+# 所以每次起 maestro 前、以及本脚本退出时，都把旧驱动清干净——重试永远从零开始。
+kill_ios_drivers() {
+  pkill -f "maestro-driver-ios" 2>/dev/null
+  pkill -f "xcodebuild.*maestro" 2>/dev/null
+  pkill -f "idb_companion" 2>/dev/null
+  return 0
+}
+if [[ "$PLATFORM" == "ios" ]]; then
+  if kill_ios_drivers; then sleep 1; fi
+  # 全量验收跑完默认关掉模拟器（会话状态清零）；定向验证保留 boot 态省时间
+  if [[ -z "$SHUTDOWN" ]]; then
+    if [[ -z "$ONLY_KW" && "$CHANGED" == "0" && "$ATTACH" == "0" ]]; then SHUTDOWN=1; else SHUTDOWN=0; fi
+  fi
+fi
+
 if [[ "$SKIP_BUILD" == "0" ]]; then
   echo "构建中 ($BUILD_MODE)..."
   if [[ "$PLATFORM" == "android" ]]; then
@@ -229,7 +250,11 @@ else
   xcrun simctl spawn booted log stream --level debug > "$OUT/logs/device.log" 2>&1 &
   LOG_PID=$!
 fi
-trap '[[ -n "${LOG_PID:-}" ]] && kill $LOG_PID 2>/dev/null' EXIT
+if [[ "$PLATFORM" == "ios" ]]; then
+  trap '[[ -n "${LOG_PID:-}" ]] && kill $LOG_PID 2>/dev/null; kill_ios_drivers' EXIT
+else
+  trap '[[ -n "${LOG_PID:-}" ]] && kill $LOG_PID 2>/dev/null' EXIT
+fi
 
 echo "执行 flow..."
 # 空数组展开写 ${arr[@]+...}：macOS 系统 bash 3.2 下 set -u + 空数组直接报
@@ -260,5 +285,9 @@ else
   echo "  设备日志:     $OUT/logs/device.log"
   echo "  截图/层级:    $OUT/artifacts/"
   echo "按 references/triage.md 做三分类后再决定改不改测试。"
+fi
+if [[ "$PLATFORM" == "ios" && "$SHUTDOWN" == "1" ]]; then
+  echo "关闭模拟器（清零自动化会话状态；定向验证或 --no-shutdown 时保留 boot 态）..."
+  xcrun simctl shutdown "$UDID" 2>/dev/null
 fi
 exit $STATUS
