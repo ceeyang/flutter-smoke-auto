@@ -1,0 +1,71 @@
+# 冒烟用例模板 — 复制后按 .smoke/plan.md 里对应用例填充
+#
+# 命名: smoke-<序号>-<动作>.yaml   例: smoke-03-publish-review.yaml
+# 选择器一律用 id，取自 .smoke/registry.json，不要用中文文案
+
+appId: com.example.app        # 改成实际 applicationId / bundleId
+name: SMOKE-01 <一句话说明这条测什么>
+tags:
+  - smoke
+# 凭据和测试数据一律运行时注入（run_smoke.sh --env K=V，或 maestro -e K=V），
+# 不要写 env: 块把值落进文件——flow 要进 git，check_registry.py 会拦硬编码凭据。
+---
+# ── 起始态 ──────────────────────────────
+- launchApp:
+    clearState: true
+    permissions:
+      all: allow
+- waitForAnimationToEnd:
+    timeout: 8000
+
+# 断言 1/3 到达：确认冷启动落到了预期页面
+- assertVisible:
+    id: "home_root"
+
+# ── 前置：需要登录时抽成子 flow 复用，别复制粘贴 ──
+# - runFlow:
+#     file: ../subflows/login.yaml
+
+# ── 主流程 ──────────────────────────────
+- tapOn:
+    id: "home_create_btn"
+- waitForAnimationToEnd
+
+# 输入三步曲：tap 聚焦 → eraseText 清场 → inputText。
+# inputText 是**追加**不是覆盖：开发期预填的演示值会拼在前面，
+# 产生"手机号格式不正确"这类看似 App bug 的静默失败，必须先清。
+- tapOn:
+    id: "editor_title_input"
+- eraseText
+- inputText: "冒烟测试标题"
+
+- tapOn:
+    id: "editor_body_input"
+- eraseText
+- inputText: "冒烟测试正文内容"
+
+- tapOn:
+    id: "editor_submit_btn"
+- waitForAnimationToEnd:
+    timeout: 10000
+
+# ── 断言 ────────────────────────────────
+# 2/3 无错：错误提示不该出现
+- assertNotVisible:
+    text: ".*(错误|失败|异常|Error|Failed).*"
+
+# 3/3 有内容：结果确实产生了，不是空壳页面
+- assertVisible:
+    id: "detail_title"
+
+# ── 持久化验证（涉及数据写入的用例才加）──
+- stopApp
+- launchApp:
+    clearState: false           # 这里故意不清，验证数据真的落盘了
+- waitForAnimationToEnd:
+    timeout: 8000
+- scrollUntilVisible:
+    element:
+      id: "feed_item"
+    direction: DOWN
+    timeout: 10000

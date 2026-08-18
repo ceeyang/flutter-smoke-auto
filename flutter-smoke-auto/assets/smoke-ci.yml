@@ -1,0 +1,165 @@
+# .github/workflows/smoke.yml
+#
+# 关键原则：CI 里只跑 Maestro / Playwright，不调大模型。
+# 执行必须是确定性的、分钟级的、零 API 成本的；
+# AI 只在生成用例和修复用例这两个时刻介入（本地或专门的 workflow）。
+#
+# 前提：闸门脚本已按 SKILL.md「首次落地」一节拷贝到 .smoke/scripts/ 并进 git。
+
+name: Smoke Test
+
+on:
+  pull_request:
+    paths: ['lib/**', 'pubspec.yaml', '.smoke/**']
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gates:
+    # 两个闸门先行：几秒钟就能拦下弱化测试/幻觉选择器，不用等模拟器起来
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 测试完整性闸门（拦弱化测试的改动）
+        if: github.event_name == 'pull_request'
+        run: python3 .smoke/scripts/check_test_integrity.py --base origin/${{ github.base_ref }} --no-untracked
+
+      - name: 选择器契约闸门（拦表外选择器，含 registry↔源码对账）
+        run: python3 .smoke/scripts/check_registry.py --flows .smoke/flows --registry .smoke/registry.json --source .
+
+  web:
+    # 最便宜的一端：无模拟器，几分钟内出结果。项目没有 web/ 目录就删掉这个 job。
+    needs: gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.29.x'   # 对齐项目实际版本
+          cache: true
+      - run: flutter pub get
+      - run: flutter build web --release --dart-define=SMOKE_TEST=true
+
+      - name: 安装 Playwright
+        working-directory: .smoke/flows/web
+        run: |
+          npm ci || npm i -D @playwright/test
+          npx playwright install --with-deps chromium
+
+      - name: 执行 Web 冒烟
+        run: |
+          python3 -m http.server 8788 --directory build/web &
+          cd .smoke/flows/web && SMOKE_BASE_URL=http://localhost:8788 npx playwright test --reporter=list
+        env:
+          TEST_PHONE: ${{ secrets.SMOKE_PHONE }}
+          TEST_OTP: ${{ secrets.SMOKE_OTP }}
+
+      - name: 上传失败产物
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-artifacts-web
+          path: .smoke/flows/web/test-results/
+          retention-days: 7
+
+  android:
+    needs: gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.29.x'
+          cache: true
+
+      - run: flutter pub get
+      - run: flutter analyze --no-fatal-infos
+
+      - run: flutter build apk --release --dart-define=SMOKE_TEST=true
+
+      - name: 安装 Maestro
+        run: |
+          curl -fsSL https://get.maestro.mobile.dev | bash
+          echo "$HOME/.maestro/bin" >> $GITHUB_PATH
+
+      - name: 启用 KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm
+
+      - name: 起模拟器并执行
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          disable-animations: true      # 大幅降低 flaky
+          script: |
+            adb install -r build/app/outputs/flutter-apk/app-release.apk
+            maestro test .smoke/flows \
+              --format junit --output smoke-results.xml \
+              --debug-output smoke-artifacts \
+              -e TEST_PHONE=${{ secrets.SMOKE_PHONE }} \
+              -e TEST_OTP=${{ secrets.SMOKE_OTP }}
+
+      - name: 上传失败产物
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-artifacts-android
+          path: |
+            smoke-artifacts/
+            smoke-results.xml
+          retention-days: 7
+
+  # iOS 单独一个 job：macOS runner 贵约 10 倍，
+  # 只在 main 分支和发版 tag 上跑，PR 阶段靠 Web + Android 兜底。
+  ios:
+    needs: gates
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')
+    runs-on: macos-14
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.29.x'
+          cache: true
+      - run: flutter pub get
+      - run: flutter build ios --simulator --dart-define=SMOKE_TEST=true
+
+      - name: 安装 Maestro
+        run: |
+          curl -fsSL https://get.maestro.mobile.dev | bash
+          echo "$HOME/.maestro/bin" >> $GITHUB_PATH
+
+      - name: 启动模拟器并执行
+        run: |
+          xcrun simctl boot "iPhone 15" || true
+          xcrun simctl install booted build/ios/iphonesimulator/Runner.app
+          maestro test .smoke/flows \
+            --format junit --output smoke-results-ios.xml \
+            --debug-output smoke-artifacts-ios \
+            -e TEST_PHONE=${{ secrets.SMOKE_PHONE }} \
+            -e TEST_OTP=${{ secrets.SMOKE_OTP }}
+
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-artifacts-ios
+          path: smoke-artifacts-ios/
+          retention-days: 7
