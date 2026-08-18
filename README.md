@@ -1,5 +1,7 @@
 # flutter-smoke-auto
 
+**English** | [简体中文](README.zh-CN.md)
+
 **Fully automated smoke testing for Flutter apps (Android / iOS / Web) — with integrity gates that stop AI agents from cheating on tests.**
 
 A [Claude Code](https://claude.com/claude-code) Agent Skill that derives business-critical user journeys from your Flutter source code, instruments the app for testability, generates deterministic test suites (Maestro flows for mobile, Playwright specs for web), executes them, triages failures, self-heals *test* defects, fixes *app* defects, and produces a human-reviewable report. The only manual step left is reading that report.
@@ -29,13 +31,23 @@ Compared to Maestro reference skills and MCP-based agentic testing tools:
 | CI execution | Deterministic | LLM calls per run ($$, nondeterministic) | **Deterministic, zero LLM cost** — AI only at generation & repair time |
 | Web support | — | Varies | Playwright specs sharing the same registry |
 
-Other design decisions worth knowing:
+## Advantages in detail
 
-- **One instrumentation, three platforms.** `Semantics(identifier:)` renders as `resource-id` on Android, `accessibilityIdentifier` on iOS, and `flt-semantics-identifier` in the web DOM — so mobile flows and web specs share a single selector contract.
-- **Assertions come from business expectations, not implementation.** Generated assertions are restricted to business invariants (reachability, no-error, persistence, reversibility, has-content) or documented requirements — never transcribed from code behavior, which would fossilize bugs as "expected".
-- **Failure triage is three-way and asymmetric.** `TEST_DEFECT` (locator/wait/state issues) may be auto-fixed; `APP_DEFECT` (business assertion failures) must never be "fixed" by editing the test; `ENV_FLAKE` gets one retry. When unsure → `APP_DEFECT`, because a false bug report is far cheaper than a masked one.
-- **Scoped runs are the daily default.** `run_smoke.sh --changed` maps `git diff` → registry → affected flows (plus the cold-start anchor) so routine verification takes minutes; the full suite is reserved for release gates and the `/smoke-*` commands.
-- **Vision fallback is a last resort, not the engine.** Element location degrades L1 (semantics tools) → L2 (accessibility tree) → L3 (screenshot + model + coordinate tap), with pixel-diff verification after every L3 tap. A run that lives entirely in L3 is itself reported as an accessibility defect.
+**1. A full pipeline, not a reference manual.** Existing Maestro skills teach an agent YAML syntax; this skill runs the whole job: static-scan the source for routes/screens/widgets → extract business context from docs → instrument the app → select 5–8 release-blocking journeys → generate suites → execute → triage → repair → report. The only human touchpoint is reviewing the final report.
+
+**2. Cheating is blocked by executable fact-checkers, not by prompt discipline.** The integrity gate reads the git diff and blocks: net assertion deletion, added skip/only/`optional: true`/`@Ignore`, strong→weak matcher swaps (`toEqual` → `toBeTruthy`), lowered count expectations, >3× timeout inflation, and deleted test files. Its default baseline is the *smoke-run starting commit* (so committing first doesn't blind it), untracked new files are scanned too (so the first generation round isn't a blind spot), and its failure output deliberately never prints a copy-pastable bypass flag. Mounted twice: pre-commit hook and CI step.
+
+**3. Deterministic CI with zero LLM cost.** AI participates at exactly two moments — generating tests and repairing failures. CI runs pure Maestro/Playwright: minutes-fast, reproducible, no per-run API bills. Agent-in-the-loop tools invert this and pay model latency, nondeterminism, and cost on every run.
+
+**4. One instrumentation pass covers three platforms.** `Semantics(identifier:)` renders as `resource-id` on Android, `accessibilityIdentifier` on iOS, and `flt-semantics-identifier` in the web DOM. One registry (`.smoke/registry.json`) therefore powers both Maestro flows and Playwright specs — and the registry itself is audited against source (the identifier must appear *quoted* in the claimed file, because a code comment was the cheapest way to fake it).
+
+**5. Assertions can't become tautologies.** Generated assertions are restricted to business invariants — reachability, no-error, persistence across restart, reversibility, has-content — or expectations quoted from requirement docs (with source line annotated). Transcribing code behavior into assertions is banned: that would fossilize today's bugs as tomorrow's "expected".
+
+**6. Asymmetric triage protects the signal.** Failures are classified `TEST_DEFECT` (locator/wait/dirty-state — auto-fixable, ≤3 rounds), `APP_DEFECT` (business assertion failed — the test must NOT be touched), or `ENV_FLAKE` (one retry, then escalate). When unsure → `APP_DEFECT`: a false bug report costs minutes, a masked bug costs a release. Every self-heal edit is logged in the report for human audit.
+
+**7. Scoped runs make it sustainable daily.** `--changed` maps `git diff` → registry `file` fields → affected flows (subflow references traced back to their parents), always plus the cold-start anchor — minutes instead of a full run. Four change types force a full run because their blast radius is global: routing/navigation, global state, theming/i18n, dependency or Flutter upgrades.
+
+**8. The engineering holds up.** Gate scripts are zero-dependency (including a built-in mini Maestro-YAML parser — no PyYAML) and bash 3.2 compatible; 43 regression tests written red-first against real cheat paths; hardened by actual bypass attempts observed in practice. Vision fallback (screenshot + model + coordinate tap) is a last resort with pixel-diff verification per tap — a run that lives entirely there is itself reported as an accessibility defect.
 
 ## What's in the box
 
