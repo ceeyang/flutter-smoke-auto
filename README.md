@@ -17,7 +17,7 @@ This skill ships the enforcement as **code, not prose**:
 - **`check_test_integrity.py`** — scans the git diff and *blocks* assertion deletion, added skips, weakened matchers, lowered expectations, inflated timeouts, and deleted test files. Zero dependencies, works on **any** language/framework (Playwright, Cypress, pytest, Jest, Go test, JUnit, Maestro — not just Flutter). Runs as a pre-commit hook and a CI step. Its default diff baseline is the *smoke-run starting commit*, so "commit first, check later" can't blind it.
 - **`check_registry.py`** — a selector contract gate. Every selector used in a test must exist in a registry (`.smoke/registry.json`), and every registry entry must actually appear (quoted) in the source code. Hallucinated selectors are caught at generation time, not on-device. Text selectors are errors by default (the laziest bypass must not be the only non-blocking path).
 
-Both gates are TDD'd (43 regression tests) and were hardened against real bypass attempts observed in practice — e.g. the source audit requires the identifier to appear *quoted* because "mention the id in a comment" was the cheapest way to fool it.
+The gates and orchestration tools are TDD'd (58 regression tests) and were hardened against real bypass attempts observed in practice — e.g. the source audit requires the identifier to appear *quoted* because "mention the id in a comment" was the cheapest way to fool it.
 
 ## What makes it different
 
@@ -45,23 +45,27 @@ Compared to Maestro reference skills and MCP-based agentic testing tools:
 
 **6. Asymmetric triage protects the signal.** Failures are classified `TEST_DEFECT` (locator/wait/dirty-state — auto-fixable, ≤3 rounds), `APP_DEFECT` (business assertion failed — the test must NOT be touched), or `ENV_FLAKE` (one retry, then escalate). When unsure → `APP_DEFECT`: a false bug report costs minutes, a masked bug costs a release. Every self-heal edit is logged in the report for human audit.
 
-**7. Scoped runs make it sustainable daily.** `--changed` maps `git diff` → registry `file` fields → affected flows (subflow references traced back to their parents), always plus the cold-start anchor — minutes instead of a full run. Four change types force a full run because their blast radius is global: routing/navigation, global state, theming/i18n, dependency or Flutter upgrades.
+**7. Scoped runs make it sustainable daily — and the full suite is an explicit choice.** `run_smoke.sh` *refuses bare runs*: you must state a scope (`--changed` / `--only <feature>` / `--failed` / `--from-list` / `--all`). `--changed` maps `git diff` → registry `file` fields → affected flows (subflow references traced back to their parents, feature-directory fallback for logic-layer edits), always plus the cold-start anchor — minutes instead of a full run. `--failed` re-runs only the last round's failures. A keyword that matches nothing hard-fails with the list of available case names — the silent degradation that nudged agents toward "just run everything" is gone. Four change types still force a full run because their blast radius is global: routing/navigation, global state, theming/i18n, dependency or Flutter upgrades. A >50% failure rate trips a circuit breaker: that's one broken precondition, not twenty independent bugs.
 
-**8. The engineering holds up.** Gate scripts are zero-dependency (including a built-in mini Maestro-YAML parser — no PyYAML) and bash 3.2 compatible; 43 regression tests written red-first against real cheat paths; hardened by actual bypass attempts observed in practice. Vision fallback (screenshot + model + coordinate tap) is a last resort with pixel-diff verification per tap — a run that lives entirely there is itself reported as an accessibility defect.
+**8. Parallel where it's safe, serial where it's not.** Parallelism is *declared, not assumed*: flows tag their resource usage (`mutates-posts` / `readonly`), `shard_flows.py` puts write-conflicting cases (transitive closure) in the same serial lane and spreads the rest; undeclared cases are conservatively serialized. `device_pool.py` gives each session exclusive ownership of its simulators (cross-session registry, user-pinned assignments, per-platform caps + live memory budgeting) — critical on iOS, where two automation sessions on one simulator crash SpringBoard. Web parallelism is native: Playwright workers get isolated browser contexts (no shared cookies/cache), with a `laneEnv()` helper assigning per-worker test accounts. Multi-platform acceptance runs platforms concurrently via read-only subagents, with fixes centralized and deduped by root cause.
+
+**9. The engineering holds up.** Gate scripts are zero-dependency (including a built-in mini Maestro-YAML parser — no PyYAML) and bash 3.2 compatible; 58 regression tests written red-first against real cheat paths; hardened by actual bypass attempts observed in practice. Vision fallback (screenshot + model + coordinate tap) is a last resort with pixel-diff verification per tap — a run that lives entirely there is itself reported as an accessibility defect.
 
 ## What's in the box
 
 | Path | What it is |
 |---|---|
-| `flutter-smoke-auto/` | The main skill: SKILL.md (workflow), 7 reference docs, 6 scripts, CI/hook/flow templates, gate regression tests |
-| `smoke-all/` | `/smoke-all` — full acceptance run on every available platform, parallel execution |
+| `flutter-smoke-auto/` | The main skill: SKILL.md (workflow), 7 reference docs, 8 scripts, CI/hook/flow templates, gate regression tests |
+| `smoke-all/` | `/smoke-all` — full acceptance run on every available platform, platforms in parallel (plus in-platform lanes for large suites) |
 | `smoke-android/` `smoke-ios/` `smoke-web/` | `/smoke-android` etc. — full acceptance run on one platform |
 
 Key scripts (all zero-dependency Python 3 / bash 3.2 compatible):
 
 - `check_test_integrity.py` — the anti-weakening gate (framework-agnostic; usable standalone in any repo)
 - `check_registry.py` — selector contract + source audit gate (includes a built-in mini Maestro YAML parser, no PyYAML)
-- `select_flows.py` — git-diff → affected-flows mapping for scoped runs
+- `select_flows.py` — git-diff / keyword / last-failures → affected-flows mapping for scoped runs
+- `shard_flows.py` — resource-conflict-aware lane splitting for in-platform parallel execution
+- `device_pool.py` — cross-session simulator ownership registry (claim / pin / caps / memory budget)
 - `run_smoke.sh` — build, boot devices/servers, execute, collect artifacts (all three platforms)
 - `screen.py` — screenshot / coordinate tap / pixel diff / blank-red-screen detection / logcat capture
 - `scan_app.py` — static scan of `lib/` producing the app map (routes, screens, interactive widgets)
