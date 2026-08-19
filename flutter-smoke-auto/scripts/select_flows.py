@@ -139,6 +139,14 @@ def main():
         for f in mains:
             if kw in keyword_haystack(f):
                 selected.add(f)
+        if not selected:
+            # 硬拒绝而不是静默退化：曾经这里悄悄只剩冷启动，agent 顺势升级成
+            # --all 全量。关键词错了就该改关键词，不是扩大范围。
+            names = [os.path.splitext(os.path.basename(f))[0] for f in mains]
+            print(f"关键词 '{args.keyword}' 没有匹配到任何用例。可选的用例名：\n  "
+                  + "\n  ".join(names)
+                  + "\n改关键词重试；不要因为没命中就退回全量。", file=sys.stderr)
+            sys.exit(2)
     elif args.failed:
         # 修复轮的工具入口。没有它时"只重跑失败的那几条"是纪律没有抓手，
         # agent 会图省事整轮全量重跑（真实项目实测：同一失败集连跑两遍全量）

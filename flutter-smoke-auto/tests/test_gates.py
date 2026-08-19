@@ -444,6 +444,15 @@ class TestSelectFlows(unittest.TestCase):
         self.assertIn("smoke-02-login.yaml", r.stdout)
         self.assertNotIn("smoke-03-feed.yaml", r.stdout)
 
+    def test_keyword_no_match_refuses_loudly(self):
+        """实测事故：--only 关键词没命中时曾静默输出只剩冷启动，agent 顺势
+        升级成 --all 全量。必须硬拒绝（exit 2）并列出可选用例名，堵死这条退化路。"""
+        r = self.select("--keyword", "avatar_upload_typo")
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        err = r.stdout + r.stderr
+        self.assertIn("smoke-02-login", err)      # 列出候选帮着改关键词
+        self.assertNotIn("--all", err.split("不要")[0] if "不要" in err else "")  # 不教升级全量
+
     def test_web_keyword_selects_spec(self):
         self.repo.write(".smoke/flows/web/smoke-01-cold-start.spec.ts", "byId(page,'home_root')")
         self.repo.write(".smoke/flows/web/smoke-02-login.spec.ts", "byId(page,'login_submit_btn')")
