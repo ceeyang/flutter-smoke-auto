@@ -62,6 +62,51 @@ bash scripts/run_smoke.sh --platform ios --failed          # 修复轮：只重�
 
 两个衔接点：开发伴随模式收尾（用户说"行了 / 就这样 / 完成了"）时，**主动提议跑一轮正式冒烟收口**；反过来，冒烟的 Phase 5.5 修复轮次里，可以先用开发伴随模式秒级快验修没修对，确认后再 build + install 出定论——报告只认安装包跑出来的结果。
 
+### 端内并行：多设备车道（用例多、等不起串行时）
+
+用例规模大（≥10 条）时，把互不冲突的用例拆成车道并行跑。三条铁律先立住：
+
+1. **并行是声明出来的，不是默认的。** 用例在 `tags:` 里声明资源占用
+   （`mutates-posts` / `readonly`），Phase 3 的 plan.md 里同步写一行
+   `资源: writes=[posts] reads=[feed]`。没声明的视为互相冲突，保守串行。
+2. **写同一资源（含传递闭包）→ 同车道串行；每条车道独立测试账号**
+   （`--env TEST_PHONE=$TEST_PHONE_LANE1`）——大部分"互踩"其实是踩同一账号的数据。
+3. **iOS 一台模拟器同时只许一个 maestro 驱动**（两个自动化会话并发会打崩
+   SpringBoard，见 PITFALLS）；多台模拟器各配各的驱动是安全的。
+
+工具链与流程（构建一次，车道只执行）：
+
+```bash
+python3 scripts/shard_flows.py --flows .smoke/flows --lanes 2 --out .smoke/lanes
+python3 scripts/device_pool.py claim --platform android --owner $CLAUDE_SESSION_ID
+                                    # 认领设备（已启动的优先）；被别的会话占用会拒绝
+bash scripts/run_smoke.sh --platform android --from-list .smoke/lanes/lane-1.txt \
+     --device <认领到的serial> --skip-build --env TEST_PHONE=$TEST_PHONE_LANE1 &
+# lane-2 同理换设备换账号；子代理并行时每车道一个代理，只执行+分诊不改文件
+python3 scripts/device_pool.py release --mine --owner $CLAUDE_SESSION_ID   # 跑完释放
+```
+
+**设备池纪律**：注册表在 `~/.flutter-smoke/device-pool.json`，跨会话共享。
+用户 pin 给某会话的设备（`assign --pin`）别的会话碰不了，解除只能用户明示
+（`release --unpin`）。占用超 2 小时 `list` 里标 STALE，只提示不自动抢。
+上限：移动端每端 ≤2 台（`FSA_MAX_PER_PLATFORM`），并按实时内存预算核算
+（android 3G / ios 2.5G，预留 8G），超了拒绝 claim。
+
+**Web 端不用车道工具**：`--workers 4`（或 `SMOKE_WORKERS=4`）走 playwright
+原生并行，每个 worker 独立 browser context，缓存/cookie 天然隔离；
+账号用 `helpers.ts` 的 `laneEnv()` 按 worker 分发。
+
+**Web 优先原则**：能在 Web 端验证的用例（纯 Dart 共享逻辑、无原生插件依赖）
+先跑 Web——秒级构建、零模拟器内存、4 车道并行，是最便宜的探测器。Web 红了
+先修再碰模拟器。但 **Web 绿 ≠ 移动端绿**（ATS、权限、键盘、平台通道只在移动端炸），
+发版结论仍以各端自己跑过为准；仅移动端能测的用例在 plan.md 标 `platforms: [android, ios]`。
+省内存的设备偏好序：已启动的设备 > iOS 模拟器(~2.5G) > Android 模拟器(~3G)。
+
+**账号来源**：优先用用户提供的测试账号（车道数 > 账号数时多余车道只跑只读用例）。
+没提供账号且 App 支持自助注册时，满足三个条件才自建：有 `SMOKE_TEST` 固定验证码
+后门、后端是测试环境（base URL 含 localhost/test/staging，判断不了就停下来问）、
+建完缓存进 `.smoke/accounts.json` 复用不重复注册。缺任一条件 → 写类用例锁死单车道。
+
 ## 为什么按这个顺序做
 
 三件事决定这套流程是有用还是有害，先理解再执行：
@@ -161,7 +206,7 @@ python scripts/check_registry.py --registry .smoke/registry.json --source .   # 
 
 有需求文档时，额外加从文档抽的具体期望值，并在 flow 注释里标注出处行号，方便日后追溯。
 
-产出 `.smoke/plan.md`：每条用例写清楚 **目的 / 前置数据 / 步骤 / 断言 / 失败意味着什么**。这份文件是后面所有生成动作的唯一依据。
+产出 `.smoke/plan.md`：每条用例写清楚 **目的 / 前置数据 / 步骤 / 断言 / 失败意味着什么 / 资源与平台**（`资源: writes=[...] reads=[...]`、`platforms: [web, android, ios]`——车道并行与 Web 优先靠这两行做决策，生成 flow 时同步落成 `tags:` 里的 `mutates-*`/`readonly`）。这份文件是后面所有生成动作的唯一依据。
 
 ## Phase 4 — 生成用例
 
@@ -332,6 +377,8 @@ cp assets/pre-commit-hook.sh .git/hooks/pre-commit && chmod +x .git/hooks/pre-co
   dev-loop（开发伴随模式）· journey-selection（选用例模板、定向用例写法）· triage（失败三分类）
 - **scripts/**：scan_app（静态扫描）· check_registry（选择器契约闸门）·
   check_test_integrity（防弱化闸门，跨语言）· select_flows（定向选用例）·
+  shard_flows（按资源写冲突分车道）· device_pool（跨会话模拟器所有权）·
   screen（截图/点击/差分/异常采集）· run_smoke（三端执行入口）
 - **assets/**：flow-template.yaml · web-smoke/（Playwright 模板）· smoke-ci.yml · pre-commit-hook.sh
-- **tests/**：test_gates.py + test_screen.py，改脚本前先跑；纪律见 tests/README.md
+- **tests/**：test_gates.py + test_screen.py + test_device_pool.py + test_shard_flows.py，
+  改脚本前先跑；纪律见 tests/README.md

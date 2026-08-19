@@ -34,6 +34,13 @@ description: /smoke-all — 对当前 Flutter 项目的全部可用端（Web + A
 
 子代理提示词里明确写上这个约束和返回格式。三端产物目录互不重叠，无写冲突。
 
+**用例多（≥10 条）时叠加端内车道**（主 skill「端内并行」一节）：
+`shard_flows.py` 分车道 → `device_pool.py` 每车道认领独立设备（移动端每端 ≤2 台，
+内存预算核算）→ 每车道一个子代理 `--from-list lane-N.txt --device <认领的> --env
+TEST_PHONE=$TEST_PHONE_LANE<N>`；Web 端直接 `--workers 4` 不开子代理。
+执行顺序 Web 优先（最便宜的探测器，红了先修再耗模拟器），但发版结论以各端自己跑过为准。
+所有子代理退出前 release 自己认领的设备（用户 pin 的不动）。
+
 **③ 集中修复（主 agent，串行）**
 
 - 合并三端分诊，**按根因去重**：同一缺陷三端都红只算一个，修一次

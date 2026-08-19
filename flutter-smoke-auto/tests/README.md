@@ -8,6 +8,8 @@
 ```bash
 python3 tests/test_gates.py        # 零第三方依赖，~3 秒
 python3 tests/test_screen.py       # screen.py 纯函数（diff/inspect/坐标换算），需 Pillow，没装自动跳过
+python3 tests/test_device_pool.py  # 设备池：所有权/pin/每端上限/内存预算
+python3 tests/test_shard_flows.py  # 车道划分：写冲突同车道/只读摊平/未声明保守串行
 ```
 
 覆盖 `check_test_integrity.py`、`check_registry.py`、`select_flows.py`。每个用例都是一条真实的

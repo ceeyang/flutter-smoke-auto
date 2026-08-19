@@ -10,7 +10,11 @@
 #   bash run_smoke.sh --platform android --all --build-mode release
 #   bash run_smoke.sh --platform android --changed --env TEST_PHONE=13800000000 --env TEST_OTP=000000
 #
-# 必须指定范围之一（--changed / --only / --failed / --all）；裸跑会拒绝执行——
+# 端内并行（车道）：shard_flows.py 分车道 + device_pool.py 认领设备后——
+#   bash run_smoke.sh --platform android --from-list .smoke/lanes/lane-1.txt --device emulator-5554 --skip-build
+#   bash run_smoke.sh --platform web --all --workers 4     # web 并行走 playwright workers
+#
+# 必须指定范围之一（--changed / --only / --failed / --from-list / --all）；裸跑会拒绝执行——
 # 全量是明确的选择，不是忘了带参数的默认。CI（$CI 非空）与 --attach 豁免。
 #
 # 构建模式默认值（可用 --build-mode 覆盖）：
@@ -35,6 +39,9 @@ ONLY_KW=""
 CHANGED=0
 FAILED=0
 ALL=0
+FROM_LIST=""
+DEVICE=""     # 显式指定设备（车道并行时由 device_pool 认领后传入）
+WORKERS=""    # web：playwright 并行 worker 数（也可用 SMOKE_WORKERS 环境变量）
 SHUTDOWN=""   # iOS：跑完是否 simctl shutdown。空=自动（全量关、定向不关），--shutdown/--no-shutdown 显式覆盖
 
 while [[ $# -gt 0 ]]; do
@@ -48,6 +55,9 @@ while [[ $# -gt 0 ]]; do
     --changed)     CHANGED=1; shift ;;                # 定向：git 改动推导用例
     --failed)      FAILED=1; shift ;;                 # 修复轮：只重跑上一轮失败的用例
     --all)         ALL=1; shift ;;                    # 显式全量（提测/发版/首次验收/CI）
+    --from-list)   FROM_LIST="$2"; shift 2 ;;         # 车道并行：跑清单里的 flow（shard_flows 产出）
+    --device)      DEVICE="$2"; shift 2 ;;            # 指定设备 serial/UDID（配合 device_pool claim）
+    --workers)     WORKERS="$2"; shift 2 ;;           # web 并行 worker 数
     --build-mode)  BUILD_MODE="$2"; shift 2 ;;
     --dart-define) DART_DEFINES="$DART_DEFINES --dart-define=$2"; shift 2 ;;
     --env)         MAESTRO_ENV+=("-e" "$2"); shift 2 ;;
@@ -57,17 +67,19 @@ while [[ $# -gt 0 ]]; do
     *) echo "未知参数: $1"; exit 2 ;;
   esac
 done
+WORKERS="${WORKERS:-${SMOKE_WORKERS:-}}"
 
 # ── 范围闸门：全量必须是明确的选择，不能是忘了带参数的静默默认 ──
 # 真实项目实测：裸跑=全量让定向执行从未被用过（5 轮全是全量，含同一失败集
 # 连跑两遍）。CI（$CI 非空）和 attach 快验豁免；/smoke-* 与 smoke-ci.yml 显式带 --all。
 if [[ "$ALL" == "0" && "$FAILED" == "0" && "$CHANGED" == "0" && -z "$ONLY_KW" \
-      && "$ATTACH" == "0" && -z "${CI:-}" ]]; then
+      && -z "$FROM_LIST" && "$ATTACH" == "0" && -z "${CI:-}" ]]; then
   echo "未指定执行范围。全量一轮十几分钟，日常验证不该跑它："
-  echo "  --changed        按 git 改动自动圈用例（日常默认）"
-  echo "  --only <关键词>  手动圈范围"
-  echo "  --failed         修复轮：只重跑上一轮失败的用例 + 冷启动"
-  echo "  --all            确实要全量（提测 / 发版 / 首次验收 / CI）"
+  echo "  --changed          按 git 改动自动圈用例（日常默认）"
+  echo "  --only <关键词>    手动圈范围"
+  echo "  --failed           修复轮：只重跑上一轮失败的用例 + 冷启动"
+  echo "  --from-list <file> 车道并行：跑 shard_flows 分好的清单"
+  echo "  --all              确实要全量（提测 / 发版 / 首次验收 / CI）"
   exit 2
 fi
 
@@ -75,13 +87,29 @@ SCOPE="all"
 [[ "$CHANGED" == "1" ]] && SCOPE="changed"
 [[ -n "$ONLY_KW" ]] && SCOPE="only:$ONLY_KW"
 [[ "$FAILED" == "1" ]] && SCOPE="failed"
+[[ -n "$FROM_LIST" ]] && SCOPE="lane:$(basename "$FROM_LIST")"
 [[ "$ATTACH" == "1" ]] && SCOPE="attach"
 
 # ── 定向选用例：把范围收窄到受影响的用例 + 冷启动锚点 ──
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PW_FILTER=()
 PW_EXTRA=()
-if [[ "$FAILED" == "1" && "$PLATFORM" == "web" ]]; then
+if [[ -n "$FROM_LIST" ]]; then
+  # 车道清单：shard_flows.py 产出，每行一个 flow 路径
+  [[ -f "$FROM_LIST" ]] || { echo "找不到车道清单: $FROM_LIST"; exit 2; }
+  SELECTED=$(grep -v '^\s*$' "$FROM_LIST")
+  [[ -z "$SELECTED" ]] && { echo "车道清单为空: $FROM_LIST"; exit 2; }
+  echo "车道执行（$(basename "$FROM_LIST")），用例："; echo "$SELECTED" | sed 's/^/  /'
+  if [[ "$PLATFORM" == "web" ]]; then
+    while IFS= read -r f; do PW_FILTER+=("$(basename "$f")"); done <<< "$SELECTED"
+  else
+    # 目录名带清单名：多车道并行时互不覆盖
+    SEL_DIR="$(dirname "$FLOWS")/flows-selected-$PLATFORM-$(basename "$FROM_LIST" .txt)"
+    rm -rf "$SEL_DIR" && mkdir -p "$SEL_DIR"
+    while IFS= read -r f; do cp "$f" "$SEL_DIR/"; done <<< "$SELECTED"
+    FLOWS="$SEL_DIR"
+  fi
+elif [[ "$FAILED" == "1" && "$PLATFORM" == "web" ]]; then
   # web 用 playwright 自带的失败重跑，不经 select_flows
   PW_EXTRA+=(--last-failed)
 elif [[ -n "$ONLY_KW" || "$CHANGED" == "1" || "$FAILED" == "1" ]]; then
@@ -192,6 +220,9 @@ if [[ "$PLATFORM" == "web" ]]; then
     exit 1
   fi
 
+  # workers>1 时各 worker 用独立 browser context（cookie/storage/缓存互不可见），
+  # 浏览器层天然隔离；互踩风险只在后端账号数据，靠 helpers.ts 的 laneEnv 按 worker 分账号
+  [[ -n "$WORKERS" ]] && PW_EXTRA+=("--workers=$WORKERS")
   ( cd "$WEB_SPEC_DIR" && \
     SMOKE_BASE_URL="http://localhost:$WEB_PORT" npx playwright test \
       ${PW_FILTER[@]+"${PW_FILTER[@]}"} \
@@ -224,21 +255,33 @@ fi
 # Maestro 不指定设备可能选错端，错误信息却是误导性的 "Package X is not installed"。
 DEVICE_ARGS=()
 if [[ "$PLATFORM" == "android" ]]; then
-  SERIAL=$(adb devices | awk 'NR>1 && $2=="device"{print $1; exit}')
-  if [[ -z "$SERIAL" ]]; then
-    echo "没有可用的 Android 设备/模拟器。启动一个再试：emulator -avd <name>"
-    exit 1
+  if [[ -n "$DEVICE" ]]; then
+    adb devices | awk 'NR>1 && $2=="device"{print $1}' | grep -qx "$DEVICE" \
+      || { echo "指定的 Android 设备 $DEVICE 不在线（adb devices 里没有）。"; exit 1; }
+    SERIAL="$DEVICE"
+  else
+    SERIAL=$(adb devices | awk 'NR>1 && $2=="device"{print $1; exit}')
+    if [[ -z "$SERIAL" ]]; then
+      echo "没有可用的 Android 设备/模拟器。启动一个再试：emulator -avd <name>"
+      exit 1
+    fi
   fi
   DEVICE_ARGS=(--device "$SERIAL")
   echo "Android 设备: $SERIAL"
 else
-  UDID=$(xcrun simctl list devices booted -j 2>/dev/null | python3 -c "
+  if [[ -n "$DEVICE" ]]; then
+    xcrun simctl list devices booted 2>/dev/null | grep -q "$DEVICE" \
+      || { echo "指定的 iOS 模拟器 $DEVICE 未启动。先 xcrun simctl boot $DEVICE"; exit 1; }
+    UDID="$DEVICE"
+  else
+    UDID=$(xcrun simctl list devices booted -j 2>/dev/null | python3 -c "
 import json, sys
 devs = [d for v in json.load(sys.stdin)['devices'].values() for d in v]
 print(devs[0]['udid'] if devs else '')")
-  if [[ -z "$UDID" ]]; then
-    echo "没有已启动的 iOS 模拟器。启动一个再试：open -a Simulator"
-    exit 1
+    if [[ -z "$UDID" ]]; then
+      echo "没有已启动的 iOS 模拟器。启动一个再试：open -a Simulator"
+      exit 1
+    fi
   fi
   DEVICE_ARGS=(--udid "$UDID")
   echo "iOS 模拟器: $UDID"
@@ -268,22 +311,23 @@ if [[ "$SKIP_BUILD" == "0" ]]; then
     flutter build apk --$BUILD_MODE $DART_DEFINES 2>&1 | tee "$OUT/logs/build.log"
     APK=$(find build/app/outputs -name "*.apk" -newer pubspec.yaml -exec ls -t {} + 2>/dev/null | head -1)
     [[ -z "$APK" ]] && { echo "构建产物未找到，见 $OUT/logs/build.log"; exit 1; }
-    adb install -r "$APK" 2>&1 | tee -a "$OUT/logs/build.log"
+    # adb/simctl 一律显式指定设备：多台在线时裸命令直接报错或装错台（车道并行必踩）
+    adb -s "$SERIAL" install -r "$APK" 2>&1 | tee -a "$OUT/logs/build.log"
   else
     flutter build ios --simulator --$BUILD_MODE $DART_DEFINES 2>&1 | tee "$OUT/logs/build.log"
     APP=$(find build/ios/iphonesimulator -maxdepth 1 -name "*.app" | head -1)
     [[ -z "$APP" ]] && { echo "构建产物未找到，见 $OUT/logs/build.log"; exit 1; }
-    xcrun simctl install booted "$APP" 2>&1 | tee -a "$OUT/logs/build.log"
+    xcrun simctl install "$UDID" "$APP" 2>&1 | tee -a "$OUT/logs/build.log"
   fi
 fi
 
 # 采集设备日志（失败分诊要用）
 if [[ "$PLATFORM" == "android" ]]; then
-  adb logcat -c
-  adb logcat > "$OUT/logs/device.log" 2>&1 &
+  adb -s "$SERIAL" logcat -c
+  adb -s "$SERIAL" logcat > "$OUT/logs/device.log" 2>&1 &
   LOG_PID=$!
 else
-  xcrun simctl spawn booted log stream --level debug > "$OUT/logs/device.log" 2>&1 &
+  xcrun simctl spawn "$UDID" log stream --level debug > "$OUT/logs/device.log" 2>&1 &
   LOG_PID=$!
 fi
 if [[ "$PLATFORM" == "ios" ]]; then

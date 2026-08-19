@@ -2,7 +2,17 @@
 // 契约：选择器只走 byId()，id 来自 .smoke/registry.json（与移动端共用一份）。
 // Flutter 3.19+ 的 Semantics(identifier:) 在 Web 上渲染为 DOM 属性
 // flt-semantics-identifier，这是三端共用契约表的基础。
-import { Page, expect } from '@playwright/test';
+import { Page, TestInfo, expect } from '@playwright/test';
+
+/**
+ * 并行车道的账号分发：worker N 优先取 <NAME>_LANE<N+1>（如 TEST_PHONE_LANE2），
+ * 没配就回落到共享的 <NAME>。写类用例并行的前提是每条车道独立账号——
+ * 浏览器 context 已天然隔离，互踩只发生在后端同一账号的数据上。
+ * 用法：const phone = laneEnv(test.info(), 'TEST_PHONE');
+ */
+export function laneEnv(testInfo: TestInfo, name: string): string | undefined {
+  return process.env[`${name}_LANE${testInfo.workerIndex + 1}`] ?? process.env[name];
+}
 
 /** 唯一合法的业务元素定位方式。别用 getByText —— check_registry.py 会拦。 */
 export const byId = (page: Page, id: string) =>
