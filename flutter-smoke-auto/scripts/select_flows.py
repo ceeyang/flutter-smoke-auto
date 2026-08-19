@@ -10,10 +10,13 @@
     python select_flows.py --flows .smoke/flows --registry .smoke/registry.json --changed --base HEAD~3
     python select_flows.py --flows .smoke/flows --keyword login            # 手动圈范围
     python select_flows.py --flows .smoke/flows --keyword login --web     # 输出 web spec
+    python select_flows.py --flows .smoke/flows --failed .smoke/runs/<ts>/artifacts/results.xml
+                                                                          # 修复轮：只重跑上轮失败
 
 规则:
     - 冷启动用例（文件名含 smoke-01 / cold / launch，取不到则字典序第一条）永远包含
     - --changed 映射不到任何用例时只输出冷启动，并在 stderr 提醒补用例
+    - --failed 按 junit testcase name 匹配 flow 的 name: 字段或文件名主干；上轮全绿则拒绝（退出 2）
     - 零第三方依赖
 
 退出码: 0 正常 / 2 参数或环境错误
@@ -97,6 +100,8 @@ def main():
     mode = ap.add_mutually_exclusive_group(required=True)
     mode.add_argument("--changed", action="store_true", help="按 git 改动推导（需 --registry）")
     mode.add_argument("--keyword", help="按文件名/用例名关键词圈定")
+    mode.add_argument("--failed", metavar="RESULTS_XML",
+                      help="按上一轮 junit 结果只圈失败用例（修复轮重跑用）")
     ap.add_argument("--base", default="HEAD", help="--changed 的对比基准")
     ap.add_argument("--web", action="store_true", help="输出 web spec 而非移动端 flow")
     args = ap.parse_args()
@@ -134,6 +139,32 @@ def main():
         for f in mains:
             if kw in keyword_haystack(f):
                 selected.add(f)
+    elif args.failed:
+        # 修复轮的工具入口。没有它时"只重跑失败的那几条"是纪律没有抓手，
+        # agent 会图省事整轮全量重跑（真实项目实测：同一失败集连跑两遍全量）
+        import xml.etree.ElementTree as ET
+        try:
+            root = ET.parse(args.failed).getroot()
+        except (OSError, ET.ParseError) as exc:
+            sys.exit(f"读不了 junit 结果 {args.failed}: {exc}")
+        failed_names = {tc.get("name", "").strip() for tc in root.iter("testcase")
+                        if any(ch.tag in ("failure", "error") for ch in tc)}
+        failed_names.discard("")
+        if not failed_names:
+            print("上一轮全绿，没有可重跑的失败用例。要再验证请用 --changed 或 --all 全量。",
+                  file=sys.stderr)
+            sys.exit(2)
+        for f in mains:
+            stem = os.path.splitext(os.path.basename(f))[0]
+            text = read(f)
+            names = {n.strip().strip("'\"") for n in
+                     (RE_YAML_NAME.findall(text) if f.endswith((".yaml", ".yml"))
+                      else RE_SPEC_TITLE.findall(text))}
+            if stem in failed_names or names & failed_names:
+                selected.add(f)
+        if not selected:
+            sys.exit(f"junit 里的失败用例（{', '.join(sorted(failed_names)[:5])}）"
+                     f"没有匹配到任何 flow——用例被改名/删除了？")
     else:
         if not args.registry:
             sys.exit("--changed 需要 --registry")

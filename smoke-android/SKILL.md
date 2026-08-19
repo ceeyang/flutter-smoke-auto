@@ -15,7 +15,7 @@ description: /smoke-android — 对当前 Flutter 项目的 Android 端跑全量
    （`emulator -list-avds` 选一个 `emulator -avd <name>` 后台启动，等 boot 完成），
    拉不起来才停下来向用户说明缺什么。
 3. 首次运行（无 `.smoke/registry.json`）完整走 Phase 1–4；已有则按增量模式只处理 diff。
-4. 执行：`bash <skill目录>/scripts/run_smoke.sh --platform android`
+4. 执行：`bash <skill目录>/scripts/run_smoke.sh --platform android --all`（命令即全量授权，`--all` 必带）
    （默认 profile 包保住 L1 层；测试凭据按 SKILL.md 用 `--env` 注入）。
 5. 红灯走 Phase 5.5 修复闭环：本次会话开发的功能自动修代码重跑直到全绿；
    存量功能的缺陷只记报告不擅自修。每轮改动过完整性闸门。

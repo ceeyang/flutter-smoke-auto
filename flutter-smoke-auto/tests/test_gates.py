@@ -453,6 +453,46 @@ class TestSelectFlows(unittest.TestCase):
         self.assertIn("smoke-01-cold-start.spec.ts", r.stdout)
         self.assertNotIn("feed", r.stdout)
 
+    def test_failed_selects_failed_flows_plus_cold_start(self):
+        """真实项目实测的洞：修复轮没有"只重跑失败用例"的工具入口，
+        agent 图省事整轮全量重跑（同一失败集连跑两遍）。--failed 读上一轮
+        junit，只圈失败用例 + 冷启动。maestro 的 testcase name 取 flow 的
+        name: 字段。"""
+        self.repo.write(".smoke/flows/smoke-02-login.yaml",
+                        'appId: a\nname: SMOKE-02 登录\n---\n'
+                        '- launchApp:\n    clearState: true\n'
+                        '- tapOn:\n    id: "login_submit_btn"\n')
+        self.repo.write(".smoke/runs/1/artifacts/results.xml",
+                        '<?xml version="1.0"?><testsuites><testsuite tests="3" failures="1">'
+                        '<testcase name="SMOKE-02 登录"><failure>boom</failure></testcase>'
+                        '<testcase name="smoke-03-feed"/>'
+                        '<testcase name="smoke-01-cold-start"/>'
+                        '</testsuite></testsuites>')
+        r = self.select("--failed", ".smoke/runs/1/artifacts/results.xml")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("smoke-02-login.yaml", r.stdout)
+        self.assertIn("smoke-01-cold-start.yaml", r.stdout)   # 冷启动锚点永远带上
+        self.assertNotIn("smoke-03-feed.yaml", r.stdout)      # 上轮过了的不重跑
+
+    def test_failed_matches_by_filename_stem_when_no_name(self):
+        """flow 没写 name: 字段时 maestro 用文件名主干当 testcase name。"""
+        self.repo.write(".smoke/runs/1/artifacts/results.xml",
+                        '<testsuite><testcase name="smoke-03-feed"><failure/></testcase>'
+                        '<testcase name="smoke-02-login"/></testsuite>')
+        r = self.select("--failed", ".smoke/runs/1/artifacts/results.xml")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("smoke-03-feed.yaml", r.stdout)
+        self.assertNotIn("smoke-02-login.yaml", r.stdout)
+
+    def test_failed_all_green_refuses(self):
+        """上一轮全绿：没有可重跑的失败，明确拒绝（退出码 2）——
+        而不是静默退化成空跑或全量。"""
+        self.repo.write(".smoke/runs/1/artifacts/results.xml",
+                        '<testsuite><testcase name="smoke-02-login"/></testsuite>')
+        r = self.select("--failed", ".smoke/runs/1/artifacts/results.xml")
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("全绿", r.stderr)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

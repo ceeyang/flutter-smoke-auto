@@ -42,11 +42,13 @@ Web 端 Playwright spec，共用一份契约表）→ 执行 → 分诊自愈 �
 ```bash
 bash scripts/run_smoke.sh --platform android --changed     # 日常默认：按 git 改动自动圈范围
 bash scripts/run_smoke.sh --platform android --only login  # 手动圈范围（web 同样支持）
+bash scripts/run_smoke.sh --platform ios --failed          # 修复轮：只重跑上一轮失败的用例
 # 只看会选中哪些用例（不执行）：python3 scripts/select_flows.py --flows .smoke/flows --registry .smoke/registry.json --changed
 ```
 
-**不带 `--changed`/`--only` = 全量**，只该出现在提测/发版和 `/smoke-*` 命令里。
-改一个功能后的验证命令永远带范围参数——这是默认，不是可选优化。
+**范围参数必带**（`--changed`/`--only`/`--failed`/`--all`），裸跑会被脚本拒绝——
+全量是明确的选择（`--all`），只该出现在提测/发版和 `/smoke-*` 命令里，
+不是忘了带参数时的静默默认。
 改动映射不到任何用例时（典型：新功能还没有用例），select_flows 会明确提醒：
 只为新功能增量补一条 flow/spec，跑新用例 + 冷启动，不重建其他任何东西。
 定向红灯的分诊、闸门、Phase 5.5 修复闭环与全量完全一致——省的是范围，不是纪律。
@@ -211,9 +213,10 @@ L3 的完整规程见 `references/vision-fallback.md`，三条不能省的纪律
 ## Phase 5 — 执行与自愈
 
 ```bash
-bash scripts/run_smoke.sh --platform web       # 有 web 端先跑它，秒级
-bash scripts/run_smoke.sh --platform android   # 默认 profile 包，保住 L1 层
-bash scripts/run_smoke.sh --platform ios
+# 范围参数必带：全量验收 --all，日常定向 --changed，修复轮 --failed
+bash scripts/run_smoke.sh --platform web --all       # 有 web 端先跑它，秒级
+bash scripts/run_smoke.sh --platform android --all   # 默认 profile 包，保住 L1 层
+bash scripts/run_smoke.sh --platform ios --all
 ```
 
 测试凭据用 `--env TEST_PHONE=...` 传，或直接放环境变量（`TEST_PHONE`/`TEST_OTP` 等会自动透传）。发版前建议对 Android 再补一轮 `--build-mode release`，测真实产物。
@@ -257,8 +260,9 @@ APP_DEFECT 不是终点。冒烟属于"开发完成"的定义：功能是刚开�
 
 1. 按报告里的源码位置修 `lib/` 下的**功能代码**（闸门只拦改测试，改业务代码不受限）；
 2. 修完可先用开发伴随模式秒级快验（`references/dev-loop.md`，热重载确认修没修对，
-   省掉无效的整轮构建），确认后 build+install 先只重跑失败的那几条 flow，
-   过了再全量跑一遍（防止修 A 坏 B）——写进报告的结论只认安装包的结果；
+   省掉无效的整轮构建），确认后 build+install 用 `--failed` 只重跑上轮失败的用例，
+   过了再 `--all` 全量跑一遍（防止修 A 坏 B）——写进报告的结论只认安装包的结果。
+   大面积失败（脚本会提示 ⚠）是环境/前置级故障，先修根因，不要整轮重试；
 3. 每轮修复照常过完整性闸门——修功能的过程中顺手"调整"了测试，同样会被拦；
 4. 全绿 → 进 Phase 6，报告即完成凭证。
 

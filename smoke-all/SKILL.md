@@ -26,7 +26,7 @@ description: /smoke-all — 对当前 Flutter 项目的全部可用端（Web + A
 
 每个子代理只做三件事，**禁止改任何文件**（lib/、flow、registry 都不许碰）：
 
-1. `bash <skill目录>/scripts/run_smoke.sh --platform <端> --skip-build --out .smoke/runs/<端>-<轮次>`
+1. `bash <skill目录>/scripts/run_smoke.sh --platform <端> --all --skip-build --out .smoke/runs/<端>-<轮次>`（命令即全量授权，`--all` 必带）
    （`<skill目录>` = flutter-smoke-auto 的安装绝对路径，由主 agent 解析后写死进子代理提示词，
    子代理不要自己猜路径）
 2. 按 `references/triage.md` 对每个失败做三分类，收集证据（截图路径、日志片段、源码位置）

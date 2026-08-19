@@ -16,7 +16,7 @@ description: /smoke-ios — 对当前 Flutter 项目的 iOS 端跑全量冒烟�
    `open -a Simulator`），拉不起来才停下来向用户说明缺什么。
    模拟器构建不需要签名证书；真机不在冒烟范围。
 3. 首次运行（无 `.smoke/registry.json`）完整走 Phase 1–4；已有则按增量模式只处理 diff。
-4. 执行：`bash <skill目录>/scripts/run_smoke.sh --platform ios`
+4. 执行：`bash <skill目录>/scripts/run_smoke.sh --platform ios --all`（命令即全量授权，`--all` 必带）
    （默认 debug 包——iOS 模拟器不支持 profile 注入；坐标兜底需 idb，见主 skill）。
 5. 红灯走 Phase 5.5 修复闭环：本次会话开发的功能自动修代码重跑直到全绿；
    存量功能的缺陷只记报告不擅自修。每轮改动过完整性闸门。

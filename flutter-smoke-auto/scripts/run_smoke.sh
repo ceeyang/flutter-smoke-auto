@@ -2,16 +2,16 @@
 # 构建 → 安装/启动 → 执行冒烟 → 收集产物（Android / iOS / Web 三端）
 #
 # 用法:
-#   bash run_smoke.sh --platform android --flows .smoke/flows --out .smoke/runs/$(date +%s)
 #   bash run_smoke.sh --platform android --changed    # 定向：只跑 git 改动影响的用例+冷启动（日常默认）
-#   bash run_smoke.sh --platform android --only login # 定向：只跑名字/内容匹配关键词的用例+冷启动
-#   bash run_smoke.sh --platform ios --skip-build
-#   bash run_smoke.sh --platform web                  # 需要 .smoke/flows/web/ 下有 playwright spec
-#   bash run_smoke.sh --platform android --build-mode release
-#   bash run_smoke.sh --platform android --env TEST_PHONE=13800000000 --env TEST_OTP=000000
+#   bash run_smoke.sh --platform android --only login # 定向：只跑名字/用例名匹配关键词的用例+冷启动
+#   bash run_smoke.sh --platform ios --failed         # 修复轮：只重跑上一轮失败的用例+冷启动
+#   bash run_smoke.sh --platform web --all            # 全量：提测/发版/首次验收/CI 才用
+#   bash run_smoke.sh --platform ios --all --skip-build
+#   bash run_smoke.sh --platform android --all --build-mode release
+#   bash run_smoke.sh --platform android --changed --env TEST_PHONE=13800000000 --env TEST_OTP=000000
 #
-# 改小功能后的日常验证用 --changed / --only，几分钟内完事；
-# 不带范围参数 = 全量，留给提测/发版和 /smoke-* 命令。
+# 必须指定范围之一（--changed / --only / --failed / --all）；裸跑会拒绝执行——
+# 全量是明确的选择，不是忘了带参数的默认。CI（$CI 非空）与 --attach 豁免。
 #
 # 构建模式默认值（可用 --build-mode 覆盖）：
 #   android → profile   保住 VM Service，L1 层（marionette/widget tree）才可用
@@ -33,6 +33,8 @@ WEB_PORT=8788
 ATTACH=0
 ONLY_KW=""
 CHANGED=0
+FAILED=0
+ALL=0
 SHUTDOWN=""   # iOS：跑完是否 simctl shutdown。空=自动（全量关、定向不关），--shutdown/--no-shutdown 显式覆盖
 
 while [[ $# -gt 0 ]]; do
@@ -44,6 +46,8 @@ while [[ $# -gt 0 ]]; do
     --attach)      ATTACH=1; SKIP_BUILD=1; shift ;;   # 对已运行的 App 直接跑 flow（开发伴随快验）
     --only)        ONLY_KW="$2"; shift 2 ;;           # 定向：关键词圈用例
     --changed)     CHANGED=1; shift ;;                # 定向：git 改动推导用例
+    --failed)      FAILED=1; shift ;;                 # 修复轮：只重跑上一轮失败的用例
+    --all)         ALL=1; shift ;;                    # 显式全量（提测/发版/首次验收/CI）
     --build-mode)  BUILD_MODE="$2"; shift 2 ;;
     --dart-define) DART_DEFINES="$DART_DEFINES --dart-define=$2"; shift 2 ;;
     --env)         MAESTRO_ENV+=("-e" "$2"); shift 2 ;;
@@ -54,14 +58,45 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# ── 范围闸门：全量必须是明确的选择，不能是忘了带参数的静默默认 ──
+# 真实项目实测：裸跑=全量让定向执行从未被用过（5 轮全是全量，含同一失败集
+# 连跑两遍）。CI（$CI 非空）和 attach 快验豁免；/smoke-* 与 smoke-ci.yml 显式带 --all。
+if [[ "$ALL" == "0" && "$FAILED" == "0" && "$CHANGED" == "0" && -z "$ONLY_KW" \
+      && "$ATTACH" == "0" && -z "${CI:-}" ]]; then
+  echo "未指定执行范围。全量一轮十几分钟，日常验证不该跑它："
+  echo "  --changed        按 git 改动自动圈用例（日常默认）"
+  echo "  --only <关键词>  手动圈范围"
+  echo "  --failed         修复轮：只重跑上一轮失败的用例 + 冷启动"
+  echo "  --all            确实要全量（提测 / 发版 / 首次验收 / CI）"
+  exit 2
+fi
+
+SCOPE="all"
+[[ "$CHANGED" == "1" ]] && SCOPE="changed"
+[[ -n "$ONLY_KW" ]] && SCOPE="only:$ONLY_KW"
+[[ "$FAILED" == "1" ]] && SCOPE="failed"
+[[ "$ATTACH" == "1" ]] && SCOPE="attach"
+
 # ── 定向选用例：把范围收窄到受影响的用例 + 冷启动锚点 ──
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PW_FILTER=()
-if [[ -n "$ONLY_KW" || "$CHANGED" == "1" ]]; then
+PW_EXTRA=()
+if [[ "$FAILED" == "1" && "$PLATFORM" == "web" ]]; then
+  # web 用 playwright 自带的失败重跑，不经 select_flows
+  PW_EXTRA+=(--last-failed)
+elif [[ -n "$ONLY_KW" || "$CHANGED" == "1" || "$FAILED" == "1" ]]; then
   SEL_ARGS=(--flows "$FLOWS")
   [[ "$PLATFORM" == "web" ]] && SEL_ARGS+=(--web)
   if [[ -n "$ONLY_KW" ]]; then
     SEL_ARGS+=(--keyword "$ONLY_KW")
+  elif [[ "$FAILED" == "1" ]]; then
+    LAST_XML=$(ls -t "$(dirname "$FLOWS")"/runs/*/artifacts/results.xml 2>/dev/null | head -1)
+    if [[ -z "$LAST_XML" ]]; then
+      echo "--failed 找不到上一轮结果（$(dirname "$FLOWS")/runs/*/artifacts/results.xml）。"
+      exit 2
+    fi
+    echo "重跑基准: $LAST_XML"
+    SEL_ARGS+=(--failed "$LAST_XML")
   else
     SEL_ARGS+=(--changed --registry "$(dirname "$FLOWS")/registry.json")
   fi
@@ -160,6 +195,7 @@ if [[ "$PLATFORM" == "web" ]]; then
   ( cd "$WEB_SPEC_DIR" && \
     SMOKE_BASE_URL="http://localhost:$WEB_PORT" npx playwright test \
       ${PW_FILTER[@]+"${PW_FILTER[@]}"} \
+      ${PW_EXTRA[@]+"${PW_EXTRA[@]}"} \
       --reporter=list 2>&1 | tee "$OUT_ABS/logs/playwright.log"
     exit ${PIPESTATUS[0]} )
   STATUS=$?
@@ -220,9 +256,9 @@ kill_ios_drivers() {
 }
 if [[ "$PLATFORM" == "ios" ]]; then
   if kill_ios_drivers; then sleep 1; fi
-  # 全量验收跑完默认关掉模拟器（会话状态清零）；定向验证保留 boot 态省时间
+  # 全量验收跑完默认关掉模拟器（会话状态清零）；定向/修复轮保留 boot 态省时间
   if [[ -z "$SHUTDOWN" ]]; then
-    if [[ -z "$ONLY_KW" && "$CHANGED" == "0" && "$ATTACH" == "0" ]]; then SHUTDOWN=1; else SHUTDOWN=0; fi
+    if [[ "$SCOPE" == "all" ]]; then SHUTDOWN=1; else SHUTDOWN=0; fi
   fi
 fi
 
@@ -270,11 +306,34 @@ STATUS=${PIPESTATUS[0]}
 {
   echo "platform=$PLATFORM"
   echo "build_mode=$BUILD_MODE"
+  echo "scope=$SCOPE"
   echo "exit_code=$STATUS"
   echo "commit=$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
   echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 } > "$OUT/run-meta.txt"
 write_state $STATUS
+
+# 大面积失败 = 环境/前置级故障签名（登录前置挂了、模拟器崩了、后端连不上），
+# 不是 N 个独立 bug；逐条修用例或整轮重试都没有意义
+if [[ $STATUS -ne 0 && -f "$OUT/artifacts/results.xml" ]]; then
+  BREAKER=$(python3 - "$OUT/artifacts/results.xml" <<'PY'
+import sys, xml.etree.ElementTree as ET
+try:
+    tcs = list(ET.parse(sys.argv[1]).getroot().iter("testcase"))
+    fails = sum(1 for tc in tcs if any(c.tag in ("failure", "error") for c in tc))
+    if len(tcs) >= 4 and fails * 2 > len(tcs):
+        print(f"{fails}/{len(tcs)}")
+except Exception:
+    pass
+PY
+)
+  if [[ -n "$BREAKER" ]]; then
+    echo
+    echo "⚠ $BREAKER 条失败——这是环境/前置级故障的签名，不是这么多个独立 bug。"
+    echo "  先按 references/triage.md 查错位映射和公共前置（登录 subflow、后端、模拟器），"
+    echo "  修掉根因后用 --failed 只重跑失败用例；不要整轮全量重试。"
+  fi
+fi
 
 echo
 if [[ $STATUS -eq 0 ]]; then
