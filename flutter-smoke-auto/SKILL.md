@@ -58,6 +58,9 @@ Web 端 Playwright spec，共用一份契约表）→ 执行 → 分诊自愈 �
 bash scripts/run_smoke.sh --platform android --changed     # 日常默认：按 git 改动自动圈范围
 bash scripts/run_smoke.sh --platform android --only login  # 手动圈范围（web 同样支持）
 bash scripts/run_smoke.sh --platform ios --failed          # 修复轮：只重跑上一轮失败的用例
+bash scripts/run_smoke.sh --platform ios --only avatar --device <UDID>
+                                    # 指定设备 × 指定功能：只在那台模拟器上跑该功能的用例。
+                                    # 用户点名了设备就绝不碰别的设备；范围参数照带，不因指定了设备就全量
 # 只看会选中哪些用例（不执行）：python3 scripts/select_flows.py --flows .smoke/flows --registry .smoke/registry.json --changed
 ```
 

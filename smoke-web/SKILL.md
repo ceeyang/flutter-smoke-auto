@@ -17,7 +17,11 @@ description: /smoke-web — 对当前 Flutter 项目的 Web 端跑全量冒烟�
    Phase 2 补上——不开语义树 Web 端全部定位失败）。
 3. 首次运行（无 `.smoke/registry.json`）完整走 Phase 1–4；已有则按增量模式只处理 diff。
    Web spec 按 `assets/web-smoke/` 模板生成到 `.smoke/flows/web/`。
-4. 执行：`bash <skill目录>/scripts/run_smoke.sh --platform web --all`（W1，Playwright；命令即全量授权，`--all` 必带）。
+4. 执行范围按用户输入定，**不是无脑全量**：
+   - `/smoke-web`（无参数）→ `--all`（命令即全量授权）
+   - `/smoke-web <关键词>` → `--only <关键词>`（只跑该功能的 spec + 冷启动，**不许改成 --all**）
+   - 并行：`--workers N`（Web 不占模拟器，无需设备指定）
+   执行：`bash <skill目录>/scripts/run_smoke.sh --platform web <范围参数>`（W1，Playwright）。
    没有 node/Playwright 时走 W2：chrome-devtools MCP 按 `.smoke/plan.md` 逐条执行，
    结果记入报告并**注明是 agent 手工执行、不可进 CI**（规程见 flutter-web.md）。
 5. 红灯走 Phase 5.5 修复闭环：本次会话开发的功能自动修代码重跑直到全绿；
